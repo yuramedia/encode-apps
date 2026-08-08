@@ -179,15 +179,21 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
     a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
 
+    jet_x264_params = (
+        "me=umh:subme=11:merange=32:ref=16:bframes=16:b-adapt=2:"
+        "rc-lookahead=250:no-mbtree=1:"
+        "aq-mode=3:aq-strength=0.80:qcomp=0.70:"
+        "psy-rd=1.00,0.00:deblock=-1,-1:"
+        "cbqpoffs=-2:crqpoffs=-2:"
+        "no-fast-pskip=1:no-dct-decimate=1"
+    )
+
     # x264 args
     x264 = [
         "-c:v", "libx264",
         "-profile:v", probe.video_profile,
         "-level", probe.video_level,
-        "-refs", "3", "-bf", "0",
-        "-g", "30", "-keyint_min", "30",
-        "-sc_threshold", "0", "-coder", "ac",
-        "-x264-params", "me=umh:rc-lookahead=250:aq-mode=3:deblock=-1,-1:qcomp=0.60",
+        "-x264-params", jet_x264_params,
         "-preset", s.preset,
         "-b:v", v_bitrate,
     ]
