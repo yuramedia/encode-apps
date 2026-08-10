@@ -46,6 +46,24 @@ class ProbeResult:
     duration_seconds: float = 0.0
 
 
+def normalize_profile(raw_profile: str) -> str:
+    """Map ffprobe profile names to valid x264 -profile:v strings."""
+    p = raw_profile.lower().strip()
+    if "constrained baseline" in p or "baseline" in p:
+        return "baseline"
+    elif "main" in p:
+        return "main"
+    elif "high 10" in p or "high10" in p:
+        return "high10"
+    elif "high 4:2:2" in p or "high422" in p:
+        return "high422"
+    elif "high 4:4:4" in p or "high444" in p:
+        return "high444"
+    elif "high" in p:
+        return "high"
+    return "main"
+
+
 def _run_probe(args: list[str]) -> str:
     result = subprocess.run(
         args,
@@ -81,15 +99,24 @@ def probe_video(path: str | Path) -> ProbeResult:
 
         profile = stream.get("profile", "")
         if profile and profile != "N/A":
-            pr.video_profile = profile.lower()
+            pr.video_profile = normalize_profile(profile)
 
         level_raw = stream.get("level", "")
         if level_raw and str(level_raw) != "N/A":
             level_str = str(level_raw)
-            if len(level_str) == 2:
-                pr.video_level = f"{level_str[0]}.{level_str[1]}"
-            else:
-                pr.video_level = level_str
+            try:
+                level_num = int(level_str)
+                if level_num <= 0:
+                    pr.video_level = "4.1"
+                elif len(level_str) == 2:
+                    pr.video_level = f"{level_str[0]}.{level_str[1]}"
+                else:
+                    pr.video_level = level_str
+            except ValueError:
+                if "." in level_str and not level_str.startswith("-"):
+                    pr.video_level = level_str
+                else:
+                    pr.video_level = "4.1"
     except Exception:
         pass
 
@@ -175,14 +202,15 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
 
     probe = s.probe
 
-    # Resolve bitrates
+    # Resolve profile & bitrates
+    v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
     a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
 
     # x264 args
     x264 = [
         "-c:v", "libx264",
-        "-profile:v", probe.video_profile,
+        "-profile:v", v_profile,
         "-level", probe.video_level,
         "-refs", "3", "-bf", "0",
         "-g", "30", "-keyint_min", "30",
