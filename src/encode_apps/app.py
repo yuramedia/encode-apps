@@ -527,7 +527,7 @@ class MainWindow(QMainWindow):
             p = Path(video)
             output = str(p.with_name(p.stem + "_hardsub.mp4"))
 
-        template = self._template_edit.text().strip()
+        template = self._template_edit.text().strip() or str(_DEFAULT_TEMPLATE)
         style = self._style_combo.currentText() or None
 
         return QueueItem(

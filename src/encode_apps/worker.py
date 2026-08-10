@@ -14,6 +14,15 @@ from PySide6.QtCore import QThread, Signal
 from encode_apps.encoder import EncodeSettings, build_ffmpeg_command, probe_video
 from encode_apps.srt2ass import convert as srt2ass_convert
 
+import sys
+
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _RESOURCES = Path(sys._MEIPASS) / "encode_apps" / "resources"
+else:
+    _RESOURCES = Path(__file__).resolve().parent / "resources"
+
+_DEFAULT_TEMPLATE = _RESOURCES / "Ani-One_ID_-_Template.ass"
+
 # Regex to parse ffmpeg progress line
 _PROGRESS_RE = re.compile(
     r"frame=\s*(?P<frame>\d+)\s+"
@@ -102,14 +111,15 @@ class EncodeWorker(QThread):
             self.log.emit("Menyalin file ASS ke folder temp…")
             shutil.copy2(self.subtitle_path, ass_path)
         elif sub_ext == ".srt":
-            if not self.template_path:
+            tpl = self.template_path or str(_DEFAULT_TEMPLATE)
+            if not tpl or not Path(tpl).is_file():
                 self.finished.emit(False, "Template ASS diperlukan untuk konversi SRT.")
                 return
             self.log.emit("Mengonversi SRT → ASS…")
             try:
                 count, style_name = srt2ass_convert(
                     self.subtitle_path,
-                    self.template_path,
+                    tpl,
                     ass_path,
                     self.style if self.style else None,
                 )
