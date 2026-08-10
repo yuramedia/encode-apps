@@ -58,6 +58,23 @@ class TestMainWindowQueue(unittest.TestCase):
         self.assertEqual(len(self.window._queue), 1)
         self.assertEqual(self.window._queue[0].status, "Encoding")
 
+    def test_double_click_row_loads_config(self):
+        item = QueueItem(
+            video_path="/path/to/my_video.mp4",
+            subtitle_path="/path/to/my_sub.ass",
+            output_path="/path/to/my_output.mp4",
+            preset="fast",
+        )
+        self.window._queue = [item]
+        self.window._refresh_queue_table()
+        table_item = self.window._queue_table.item(0, 1)
+
+        self.window._on_table_double_clicked(table_item)
+        self.assertEqual(self.window._video_edit.text(), "/path/to/my_video.mp4")
+        self.assertEqual(self.window._sub_edit.text(), "/path/to/my_sub.ass")
+        self.assertEqual(self.window._output_edit.text(), "/path/to/my_output.mp4")
+        self.assertEqual(self.window._preset_combo.currentText(), "fast")
+
 
 if __name__ == "__main__":
     unittest.main()

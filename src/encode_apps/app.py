@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QPalette
+from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -308,6 +308,10 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
 
+        self._queue_table.itemDoubleClicked.connect(self._on_table_double_clicked)
+        shortcut_del = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._queue_table)
+        shortcut_del.activated.connect(self._on_remove_selected_queue)
+
         lay_q.addWidget(self._queue_table)
 
         # Queue toolbar
@@ -585,6 +589,30 @@ class MainWindow(QMainWindow):
             # 6: Progress
             it_prog = QTableWidgetItem(item.progress_text or "-")
             self._queue_table.setItem(row, 6, it_prog)
+
+    def _on_table_double_clicked(self, table_item: QTableWidgetItem) -> None:
+        row = table_item.row()
+        if 0 <= row < len(self._queue):
+            item = self._queue[row]
+            self._video_edit.setText(item.video_path)
+            self._sub_edit.setText(item.subtitle_path)
+            self._output_edit.setText(item.output_path)
+            self._endcard_edit.setText(item.endcard_path)
+            if item.template_path:
+                self._template_edit.setText(item.template_path)
+            if item.preset:
+                idx = self._preset_combo.findText(item.preset)
+                if idx >= 0:
+                    self._preset_combo.setCurrentIndex(idx)
+            self._vbitrate_edit.setText(item.video_bitrate)
+            self._abitrate_edit.setText(item.audio_bitrate)
+            self._endcard_spin.setValue(item.endcard_seconds)
+            self._reload_styles()
+            if item.style:
+                s_idx = self._style_combo.findText(item.style)
+                if s_idx >= 0:
+                    self._style_combo.setCurrentIndex(s_idx)
+            self._log_area.appendPlainText(f"Memuat data Job #{row + 1} ke panel input.")
 
     def _on_remove_selected_queue(self) -> None:
         selected_rows = sorted(
