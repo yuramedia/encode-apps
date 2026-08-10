@@ -31,6 +31,33 @@ class TestMainWindowQueue(unittest.TestCase):
         self.assertEqual(len(self.window._queue), 1)
         self.assertEqual(self.window._queue[0].video_path, "v2.mp4")
 
+    def test_add_queue_item_while_encoding(self):
+        self.window._is_queue_running = True
+        self.assertTrue(self.window._add_queue_btn.isEnabled())
+
+        item1 = QueueItem(video_path="v1.mp4", subtitle_path="s1.ass", output_path="o1.mp4", status="Encoding")
+        item2 = QueueItem(video_path="v2.mp4", subtitle_path="s2.ass", output_path="o2.mp4", status="Pending")
+        self.window._queue = [item1]
+        self.window._queue.append(item2)
+        self.window._refresh_queue_table()
+
+        self.assertEqual(len(self.window._queue), 2)
+        self.assertEqual(self.window._queue_table.rowCount(), 2)
+
+    def test_remove_queue_item_while_encoding(self):
+        self.window._is_queue_running = True
+        item1 = QueueItem(video_path="v1.mp4", subtitle_path="s1.ass", output_path="o1.mp4", status="Encoding")
+        item2 = QueueItem(video_path="v2.mp4", subtitle_path="s2.ass", output_path="o2.mp4", status="Pending")
+        self.window._queue = [item1, item2]
+        self.window._refresh_queue_table()
+
+        # Select second row (Pending item)
+        self.window._queue_table.selectRow(1)
+        self.window._on_remove_selected_queue()
+
+        self.assertEqual(len(self.window._queue), 1)
+        self.assertEqual(self.window._queue[0].status, "Encoding")
+
 
 if __name__ == "__main__":
     unittest.main()

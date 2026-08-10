@@ -587,17 +587,23 @@ class MainWindow(QMainWindow):
             self._queue_table.setItem(row, 6, it_prog)
 
     def _on_remove_selected_queue(self) -> None:
-        if self._is_queue_running:
-            QMessageBox.warning(self, "Peringatan", "Hentikan antrean sebelum menghapus job.")
-            return
-
         selected_rows = sorted(
             list(set(index.row() for index in self._queue_table.selectedIndexes())),
             reverse=True,
         )
+        has_encoding = False
         for row in selected_rows:
             if 0 <= row < len(self._queue):
+                if self._queue[row].status == "Encoding":
+                    has_encoding = True
+                    continue
                 del self._queue[row]
+
+        if has_encoding:
+            QMessageBox.warning(
+                self, "Peringatan",
+                "Job yang sedang di-encode tidak dapat dihapus. Hentikan antrean terlebih dahulu.",
+            )
         self._refresh_queue_table()
 
     def _on_clear_completed_queue(self) -> None:
@@ -636,9 +642,6 @@ class MainWindow(QMainWindow):
 
         self._is_queue_running = True
         self._start_btn.setEnabled(False)
-        self._add_queue_btn.setEnabled(False)
-        self._remove_selected_btn.setEnabled(False)
-        self._clear_completed_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
 
         self._run_next_queue_item()
@@ -666,9 +669,6 @@ class MainWindow(QMainWindow):
             # Queue complete
             self._is_queue_running = False
             self._start_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
-            self._remove_selected_btn.setEnabled(True)
-            self._clear_completed_btn.setEnabled(True)
             self._cancel_btn.setEnabled(False)
             self._progress_bar.setVisible(False)
             self._status_label.setText("✔ Semua Job Antrean Selesai!")
@@ -740,9 +740,6 @@ class MainWindow(QMainWindow):
         else:
             self._progress_bar.setVisible(False)
             self._start_btn.setEnabled(True)
-            self._add_queue_btn.setEnabled(True)
-            self._remove_selected_btn.setEnabled(True)
-            self._clear_completed_btn.setEnabled(True)
             self._cancel_btn.setEnabled(False)
             self._status_label.setText("Antrean dihentikan / dibatalkan.")
             self._status_label.setStyleSheet("color: #aaa; font-size: 13px;")

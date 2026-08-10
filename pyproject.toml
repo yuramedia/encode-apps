@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "encode-apps"
-version = "1.0.2"
+version = "1.0.3"
 description = "Cross-platform GUI hardsub encoder — burn-in ASS/SRT subtitles with ffmpeg"
 readme = "README.md"
 requires-python = ">=3.10"
