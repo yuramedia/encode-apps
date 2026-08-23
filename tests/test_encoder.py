@@ -39,5 +39,29 @@ class TestEncoder(unittest.TestCase):
         self.assertEqual(cmd[profile_idx + 1], "baseline")
 
 
+    def test_build_ffmpeg_command_with_endcard(self):
+        probe = ProbeResult(
+            width=1920,
+            height=1080,
+            fps="25/1",
+            video_bitrate="8000000",
+            audio_sample_rate="48000",
+            audio_channels="2",
+        )
+        settings = EncodeSettings(
+            video_path="input.mp4",
+            ass_path="subs.ass",
+            output_path="output.mp4",
+            endcard_path="endcard.png",
+            endcard_seconds=10,
+            probe=probe,
+        )
+        cmd = build_ffmpeg_command(settings)
+        self.assertIn("-loop", cmd)
+        self.assertIn("endcard.png", cmd)
+        self.assertIn("anullsrc=r=48000:cl=stereo", " ".join(cmd))
+        self.assertIn("concat=n=2:v=1:a=1", " ".join(cmd))
+
+
 if __name__ == "__main__":
     unittest.main()

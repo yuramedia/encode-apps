@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QDragEnterEvent, QDropEvent, QKeySequence, QPa
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -36,7 +37,7 @@ from PySide6.QtWidgets import (
 from encode_apps.encoder import check_dependencies
 from encode_apps.queue import QueueItem, auto_pair_files
 from encode_apps.srt2ass import get_available_styles
-from encode_apps.worker import EncodeWorker
+from encode_apps.worker import EncodeWorker, FullEpisodeWorker
 
 if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
     _RESOURCES = Path(sys._MEIPASS) / "encode_apps" / "resources"
@@ -312,7 +313,29 @@ class MainWindow(QMainWindow):
         shortcut_del = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._queue_table)
         shortcut_del.activated.connect(self._on_remove_selected_queue)
 
-        lay_q.addWidget(self._queue_table)
+        # Marathon Mode options
+        marathon_box = QHBoxLayout()
+        self._marathon_cb = QCheckBox("Full Episode Mode — Combine Ep 01 → 02 → ... → Endcard into 1 video")
+        self._marathon_cb.setStyleSheet("font-weight: bold; color: #60a5fa;")
+        self._marathon_cb.toggled.connect(self._on_marathon_toggled)
+
+        self._marathon_out_lbl = QLabel("Output:")
+        self._marathon_out_lbl.setVisible(False)
+        self._marathon_out_edit = QLineEdit()
+        self._marathon_out_edit.setPlaceholderText("Auto: Full_Episode_hardsub.mp4")
+        self._marathon_out_edit.setVisible(False)
+        self._marathon_out_btn = QPushButton("Save As…")
+        self._marathon_out_btn.setFixedWidth(80)
+        self._marathon_out_btn.setVisible(False)
+        self._marathon_out_btn.clicked.connect(self._browse_marathon_output)
+
+        marathon_box.addWidget(self._marathon_cb)
+        marathon_box.addSpacing(12)
+        marathon_box.addWidget(self._marathon_out_lbl)
+        marathon_box.addWidget(self._marathon_out_edit, 1)
+        marathon_box.addWidget(self._marathon_out_btn)
+
+        lay_q.addLayout(marathon_box)
 
         # Queue toolbar
         q_btn_row = QHBoxLayout()
@@ -329,7 +352,7 @@ class MainWindow(QMainWindow):
         self._start_btn = QPushButton("▶  Start Queue")
         self._start_btn.setObjectName("startBtn")
         self._start_btn.setFixedHeight(34)
-        self._start_btn.setFixedWidth(160)
+        self._start_btn.setFixedWidth(180)
         self._start_btn.clicked.connect(self._on_start_queue)
         q_btn_row.addWidget(self._start_btn)
 
@@ -418,6 +441,23 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._output_edit.setText(path)
+
+    def _browse_marathon_output(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Full Episode Video As", "",
+            "MP4 (*.mp4);;All Files (*)",
+        )
+        if path:
+            self._marathon_out_edit.setText(path)
+
+    def _on_marathon_toggled(self, checked: bool) -> None:
+        self._marathon_out_lbl.setVisible(checked)
+        self._marathon_out_edit.setVisible(checked)
+        self._marathon_out_btn.setVisible(checked)
+        if checked:
+            self._start_btn.setText("▶  Start Full Episode")
+        else:
+            self._start_btn.setText("▶  Start Queue")
 
     def _reload_styles(self) -> None:
         self._style_combo.clear()
@@ -663,6 +703,54 @@ class MainWindow(QMainWindow):
                 self._queue.append(item)
                 self._refresh_queue_table()
 
+        if self._marathon_cb.isChecked():
+            pending_items = [item for item in self._queue if item.status in ("Pending", "Completed", "Failed")]
+            if not pending_items:
+                pending_items = self._queue
+
+            if not pending_items:
+                QMessageBox.information(self, "Info", "Tidak ada job episode di antrean untuk Full Episode mode.")
+                return
+
+            out_path = self._marathon_out_edit.text().strip()
+            if not out_path:
+                first_p = Path(pending_items[0].video_path)
+                out_path = str(first_p.with_name("Full_Episode_hardsub.mp4"))
+
+            endcard = self._endcard_edit.text().strip()
+            if endcard and not Path(endcard).is_file():
+                QMessageBox.warning(self, "Error", f"Endcard image tidak ditemukan:\n{endcard}")
+                return
+
+            self._is_queue_running = True
+            self._start_btn.setEnabled(False)
+            self._cancel_btn.setEnabled(True)
+            self._progress_bar.setVisible(True)
+            self._status_label.setText(f"Memulai Full Episode mode ({len(pending_items)} episode)…")
+            self._log_area.clear()
+
+            for item in pending_items:
+                item.status = "Encoding"
+                item.progress_text = "Full Episode..."
+            self._refresh_queue_table()
+
+            self._worker = FullEpisodeWorker(
+                queue_items=pending_items,
+                output_path=out_path,
+                endcard_path=endcard,
+                endcard_seconds=self._endcard_spin.value(),
+                video_bitrate=self._vbitrate_edit.text().strip(),
+                audio_bitrate=self._abitrate_edit.text().strip(),
+                preset=self._preset_combo.currentText(),
+                parent=self,
+            )
+
+            self._worker.log.connect(self._on_log)
+            self._worker.progress.connect(self._on_progress)
+            self._worker.finished.connect(self._on_marathon_finished)
+            self._worker.start()
+            return
+
         pending_items = [item for item in self._queue if item.status == "Pending"]
         if not pending_items:
             QMessageBox.information(self, "Info", "Tidak ada job pending di antrean.")
@@ -673,6 +761,33 @@ class MainWindow(QMainWindow):
         self._cancel_btn.setEnabled(True)
 
         self._run_next_queue_item()
+
+    def _on_marathon_finished(self, success: bool, msg: str) -> None:
+        self._progress_bar.setVisible(False)
+        self._start_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        self._is_queue_running = False
+        self._worker = None
+
+        if success:
+            for item in self._queue:
+                item.status = "Completed"
+                item.progress_text = "✔ Full Episode"
+            self._status_label.setText("✔ Full Episode Selesai!")
+            self._status_label.setStyleSheet("color: #52b788; font-size: 13px; font-weight: bold;")
+            self._log_area.appendPlainText(msg)
+            QMessageBox.information(self, "Full Episode Selesai", msg)
+        else:
+            for item in self._queue:
+                item.status = "Failed"
+                item.progress_text = "✘ Gagal"
+            self._status_label.setText("✘ Full Episode Gagal")
+            self._status_label.setStyleSheet("color: #e63946; font-size: 13px; font-weight: bold;")
+            self._log_area.appendPlainText(f"ERROR: {msg}")
+            QMessageBox.critical(self, "Error", msg)
+
+        self._refresh_queue_table()
+        self._status_label.setStyleSheet("color: #aaa; font-size: 13px;")
 
     def _on_stop_queue(self) -> None:
         if not self._is_queue_running:

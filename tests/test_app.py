@@ -75,6 +75,15 @@ class TestMainWindowQueue(unittest.TestCase):
         self.assertEqual(self.window._output_edit.text(), "/path/to/my_output.mp4")
         self.assertEqual(self.window._preset_combo.currentText(), "fast")
 
+    def test_marathon_mode_toggle(self):
+        self.assertFalse(self.window._marathon_cb.isChecked())
+        self.assertEqual(self.window._start_btn.text(), "▶  Start Queue")
+        self.assertFalse(self.window._marathon_out_edit.isVisibleTo(self.window))
+
+        self.window._marathon_cb.setChecked(True)
+        self.assertEqual(self.window._start_btn.text(), "▶  Start Full Episode")
+        self.assertTrue(self.window._marathon_out_edit.isVisibleTo(self.window))
+
 
 if __name__ == "__main__":
     unittest.main()
