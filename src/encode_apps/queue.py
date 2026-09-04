@@ -8,6 +8,7 @@ from pathlib import Path
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".ts", ".m2ts"}
 SUBTITLE_EXTENSIONS = {".srt", ".ass"}
+AUDIO_EXTENSIONS = {".mp3", ".aac", ".m4a", ".wav", ".flac", ".opus", ".ogg"}
 
 
 @dataclass
@@ -17,6 +18,7 @@ class QueueItem:
     video_path: str
     subtitle_path: str
     output_path: str
+    audio_path: str = ""
     endcard_path: str = ""
     template_path: str = ""
     style: str | None = None
@@ -36,11 +38,12 @@ class QueueItem:
 
 def auto_pair_files(
     file_paths: list[str | Path],
-) -> list[tuple[Path, Path | None]]:
-    """Scan file paths and pair videos with subtitles sharing the same stem."""
+) -> list[tuple[Path, Path | None, Path | None]]:
+    """Scan file paths and pair videos with subtitles and dubbing audio sharing the same stem."""
     paths = [Path(p) for p in file_paths]
     videos: list[Path] = []
     subtitles: dict[str, Path] = {}
+    audios: dict[str, Path] = {}
 
     for p in paths:
         ext = p.suffix.lower()
@@ -48,10 +51,14 @@ def auto_pair_files(
             videos.append(p)
         elif ext in SUBTITLE_EXTENSIONS:
             subtitles[p.stem.lower()] = p
+        elif ext in AUDIO_EXTENSIONS:
+            audios[p.stem.lower()] = p
 
-    pairs: list[tuple[Path, Path | None]] = []
+    pairs: list[tuple[Path, Path | None, Path | None]] = []
     for v in videos:
         sub = subtitles.get(v.stem.lower())
-        pairs.append((v, sub))
+        aud = audios.get(v.stem.lower())
+        pairs.append((v, sub, aud))
 
     return pairs
+

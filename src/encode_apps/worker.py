@@ -65,6 +65,7 @@ class EncodeWorker(QThread):
         video_path: str,
         subtitle_path: str,
         output_path: str,
+        audio_path: str = "",
         endcard_path: str = "",
         template_path: str = "",
         style: str | None = None,
@@ -78,6 +79,7 @@ class EncodeWorker(QThread):
         self.video_path = video_path
         self.subtitle_path = subtitle_path
         self.output_path = output_path
+        self.audio_path = audio_path
         self.endcard_path = endcard_path
         self.template_path = template_path
         self.style = style
@@ -155,12 +157,15 @@ class EncodeWorker(QThread):
             f"Audio: {probe.audio_codec} {probe.audio_bitrate or 'N/A'}, "
             f"Profile: {probe.video_profile} L{probe.video_level}"
         )
+        if self.audio_path:
+            self.log.emit(f"  Dubbing audio: {Path(self.audio_path).name}")
 
         # ── Step 3: build & run ffmpeg ───────────────────────────────
         settings = EncodeSettings(
             video_path=self.video_path,
             ass_path=ass_path,
             output_path=self.output_path,
+            audio_path=self.audio_path,
             endcard_path=self.endcard_path,
             endcard_seconds=self.endcard_seconds,
             video_bitrate=self.video_bitrate,
@@ -304,10 +309,14 @@ class FullEpisodeWorker(QThread):
             if primary_probe is None:
                 primary_probe = probe
 
+            if item.audio_path:
+                self.log.emit(f"    (Dubbing audio: {Path(item.audio_path).name})")
+
             marathon_episodes.append(
                 MarathonEpisodeItem(
                     video_path=item.video_path,
                     ass_path=ass_path,
+                    audio_path=item.audio_path,
                 )
             )
 

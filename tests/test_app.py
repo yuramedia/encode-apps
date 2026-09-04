@@ -16,12 +16,14 @@ class TestMainWindowQueue(unittest.TestCase):
             video_path="/path/to/vid1.mp4",
             subtitle_path="/path/to/sub1.ass",
             output_path="/path/to/out1.mp4",
+            audio_path="/path/to/dub1.mp3",
         )
         self.window._queue.append(item)
         self.window._refresh_queue_table()
         self.assertEqual(self.window._queue_table.rowCount(), 1)
         self.assertEqual(self.window._queue_table.item(0, 1).text(), "vid1.mp4")
-        self.assertEqual(self.window._queue_table.item(0, 5).text(), "Pending")
+        self.assertEqual(self.window._queue_table.item(0, 3).text(), "dub1.mp3")
+        self.assertEqual(self.window._queue_table.item(0, 6).text(), "Pending")
 
     def test_clear_completed(self):
         item1 = QueueItem(video_path="v1.mp4", subtitle_path="s1.ass", output_path="o1.mp4", status="Completed")
@@ -62,6 +64,7 @@ class TestMainWindowQueue(unittest.TestCase):
         item = QueueItem(
             video_path="/path/to/my_video.mp4",
             subtitle_path="/path/to/my_sub.ass",
+            audio_path="/path/to/my_dub.mp3",
             output_path="/path/to/my_output.mp4",
             preset="fast",
         )
@@ -72,7 +75,9 @@ class TestMainWindowQueue(unittest.TestCase):
         self.window._on_table_double_clicked(table_item)
         self.assertEqual(self.window._video_edit.text(), "/path/to/my_video.mp4")
         self.assertEqual(self.window._sub_edit.text(), "/path/to/my_sub.ass")
+        self.assertEqual(self.window._audio_edit.text(), "/path/to/my_dub.mp3")
         self.assertEqual(self.window._output_edit.text(), "/path/to/my_output.mp4")
+        self.assertEqual(self.window._preset_combo.currentText(), "fast")
         self.assertEqual(self.window._preset_combo.currentText(), "fast")
 
     def test_marathon_mode_toggle(self):

@@ -206,6 +206,10 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(self._browse_subtitle)
         lay_input.addLayout(r)
 
+        r, self._audio_edit, btn = _file_row("Dubbing Audio", "(Opsional) Select external audio (*.mp3 *.aac *.m4a *.wav *.flac *.opus)")
+        btn.clicked.connect(self._browse_audio)
+        lay_input.addLayout(r)
+
         r, self._endcard_edit, btn = _file_row("Endcard Image", "(Opsional) Select endcard image")
         btn.clicked.connect(self._browse_endcard)
         lay_input.addLayout(r)
@@ -290,9 +294,9 @@ class MainWindow(QMainWindow):
         lay_q = QVBoxLayout(grp_queue)
 
         self._queue_table = QTableWidget()
-        self._queue_table.setColumnCount(7)
+        self._queue_table.setColumnCount(8)
         self._queue_table.setHorizontalHeaderLabels(
-            ["#", "Video", "Subtitle", "Output", "Preset", "Status", "Progress"]
+            ["#", "Video", "Subtitle", "Dubbing Audio", "Output", "Preset", "Status", "Progress"]
         )
         self._queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._queue_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -304,10 +308,11 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
 
         self._queue_table.itemDoubleClicked.connect(self._on_table_double_clicked)
         shortcut_del = QShortcut(QKeySequence(Qt.Key.Key_Delete), self._queue_table)
@@ -417,6 +422,14 @@ class MainWindow(QMainWindow):
             self._style_combo.setEnabled(is_srt)
             self._refresh_styles_btn.setEnabled(is_srt)
 
+    def _browse_audio(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Dubbing Audio", "",
+            "Audio Files (*.mp3 *.aac *.m4a *.wav *.flac *.opus *.ogg);;All Files (*)",
+        )
+        if path:
+            self._audio_edit.setText(path)
+
     def _browse_endcard(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Endcard Image", "",
@@ -497,6 +510,9 @@ class MainWindow(QMainWindow):
                 self._style_combo.setEnabled(is_srt)
                 self._refresh_styles_btn.setEnabled(is_srt)
                 return
+            elif ext in (".mp3", ".aac", ".m4a", ".wav", ".flac", ".opus", ".ogg"):
+                self._audio_edit.setText(str(p))
+                return
             elif ext in (".png", ".jpg", ".jpeg", ".bmp"):
                 self._endcard_edit.setText(str(p))
                 return
@@ -511,18 +527,20 @@ class MainWindow(QMainWindow):
         preset = self._preset_combo.currentText()
 
         added_count = 0
-        for video_p, sub_p in pairs:
+        for video_p, sub_p, audio_p in pairs:
             if not video_p.is_file():
                 continue
             sub_str = str(sub_p) if sub_p and sub_p.is_file() else self._sub_edit.text().strip()
             if not sub_str:
                 continue
+            aud_str = str(audio_p) if audio_p and audio_p.is_file() else self._audio_edit.text().strip()
             out_str = str(video_p.with_name(video_p.stem + "_hardsub.mp4"))
 
             item = QueueItem(
                 video_path=str(video_p),
                 subtitle_path=sub_str,
                 output_path=out_str,
+                audio_path=aud_str,
                 endcard_path=self._endcard_edit.text().strip(),
                 template_path=template,
                 style=style,
@@ -557,6 +575,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", f"Subtitle tidak ditemukan:\n{subtitle}")
             return None
 
+        audio = self._audio_edit.text().strip()
+        if audio and not Path(audio).is_file():
+            QMessageBox.warning(self, "Error", f"File audio dubbing tidak ditemukan:\n{audio}")
+            return None
+
         endcard = self._endcard_edit.text().strip()
         if endcard and not Path(endcard).is_file():
             QMessageBox.warning(self, "Error", f"Endcard image tidak ditemukan:\n{endcard}")
@@ -574,6 +597,7 @@ class MainWindow(QMainWindow):
             video_path=video,
             subtitle_path=subtitle,
             output_path=output,
+            audio_path=audio,
             endcard_path=endcard,
             template_path=template,
             style=style,
@@ -605,15 +629,19 @@ class MainWindow(QMainWindow):
             sub_name = Path(item.subtitle_path).name if item.subtitle_path else "-"
             self._queue_table.setItem(row, 2, QTableWidgetItem(sub_name))
 
-            # 3: Output
-            self._queue_table.setItem(row, 3, QTableWidgetItem(Path(item.output_path).name))
+            # 3: Dubbing Audio
+            aud_name = Path(item.audio_path).name if item.audio_path else "(Original)"
+            self._queue_table.setItem(row, 3, QTableWidgetItem(aud_name))
 
-            # 4: Preset
+            # 4: Output
+            self._queue_table.setItem(row, 4, QTableWidgetItem(Path(item.output_path).name))
+
+            # 5: Preset
             it_preset = QTableWidgetItem(item.preset)
             it_preset.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._queue_table.setItem(row, 4, it_preset)
+            self._queue_table.setItem(row, 5, it_preset)
 
-            # 5: Status
+            # 6: Status
             it_status = QTableWidgetItem(item.status)
             it_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             if item.status == "Completed":
@@ -624,11 +652,11 @@ class MainWindow(QMainWindow):
                 it_status.setForeground(QColor("#ef4444"))
             elif item.status == "Cancelled":
                 it_status.setForeground(QColor("#9ca3af"))
-            self._queue_table.setItem(row, 5, it_status)
+            self._queue_table.setItem(row, 6, it_status)
 
-            # 6: Progress
+            # 7: Progress
             it_prog = QTableWidgetItem(item.progress_text or "-")
-            self._queue_table.setItem(row, 6, it_prog)
+            self._queue_table.setItem(row, 7, it_prog)
 
     def _on_table_double_clicked(self, table_item: QTableWidgetItem) -> None:
         row = table_item.row()
@@ -636,6 +664,7 @@ class MainWindow(QMainWindow):
             item = self._queue[row]
             self._video_edit.setText(item.video_path)
             self._sub_edit.setText(item.subtitle_path)
+            self._audio_edit.setText(item.audio_path)
             self._output_edit.setText(item.output_path)
             self._endcard_edit.setText(item.endcard_path)
             if item.template_path:
@@ -835,6 +864,7 @@ class MainWindow(QMainWindow):
             video_path=item.video_path,
             subtitle_path=item.subtitle_path,
             output_path=item.output_path,
+            audio_path=item.audio_path,
             endcard_path=item.endcard_path,
             template_path=item.template_path,
             style=item.style,
@@ -903,10 +933,10 @@ class MainWindow(QMainWindow):
             it_status.setForeground(QColor("#ef4444"))
         elif item.status == "Cancelled":
             it_status.setForeground(QColor("#9ca3af"))
-        self._queue_table.setItem(row, 5, it_status)
+        self._queue_table.setItem(row, 6, it_status)
 
         it_prog = QTableWidgetItem(item.progress_text or "-")
-        self._queue_table.setItem(row, 6, it_prog)
+        self._queue_table.setItem(row, 7, it_prog)
 
 
 # ───────────────────────────────────────────────────────────────────

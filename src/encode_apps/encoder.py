@@ -188,6 +188,7 @@ class EncodeSettings:
     video_path: str = ""
     ass_path: str = ""             # path to subs.ass inside temp dir
     output_path: str = ""
+    audio_path: str = ""          # optional replacement/dubbing audio
     endcard_path: str = ""         # optional
     endcard_seconds: int = 10
     video_bitrate: str = ""        # auto-detect if empty
@@ -206,6 +207,8 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
     a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
+    sr = probe.audio_sample_rate or "48000"
+    ch = probe.audio_channels or "2"
 
     # x264 args
     x264 = [
@@ -226,35 +229,55 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     if s.endcard_path:
         w, h = probe.width or 1920, probe.height or 1080
         fps = probe.fps or "24000/1001"
-        sr = probe.audio_sample_rate
 
-        filter_complex = (
-            f"[0:v]ass={ass_basename}[v0sub];"
-            f"[v0sub]format=yuv420p[v0];"
-            f"[1:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
-            f"[v0][0:a][v1][2:a]concat=n=2:v=1:a=1[outv][outa]"
-        )
-        inputs = [
-            "-i", s.video_path,
-            "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
-            "-f", "lavfi", "-t", str(s.endcard_seconds),
-            "-i", f"anullsrc=r={sr}:cl=stereo",
-        ]
+        if s.audio_path:
+            inputs = [
+                "-i", s.video_path,
+                "-i", s.audio_path,
+                "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
+                "-f", "lavfi", "-t", str(s.endcard_seconds),
+                "-i", f"anullsrc=r={sr}:cl=stereo",
+            ]
+            filter_complex = (
+                f"[0:v]ass={ass_basename}[v0sub];"
+                f"[v0sub]format=yuv420p[v0];"
+                f"[2:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
+                f"[v0][1:a][v1][3:a]concat=n=2:v=1:a=1[outv][outa]"
+            )
+        else:
+            inputs = [
+                "-i", s.video_path,
+                "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
+                "-f", "lavfi", "-t", str(s.endcard_seconds),
+                "-i", f"anullsrc=r={sr}:cl=stereo",
+            ]
+            filter_complex = (
+                f"[0:v]ass={ass_basename}[v0sub];"
+                f"[v0sub]format=yuv420p[v0];"
+                f"[1:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
+                f"[v0][0:a][v1][2:a]concat=n=2:v=1:a=1[outv][outa]"
+            )
+
         mapping = ["-map", "[outv]", "-map", "[outa]"]
         audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                      "-ar", sr, "-ac", probe.audio_channels]
+                      "-ar", sr, "-ac", ch]
     else:
         filter_complex = f"[0:v]ass={ass_basename},format=yuv420p[outv]"
-        inputs = ["-i", s.video_path]
-        mapping = ["-map", "[outv]", "-map", "0:a"]
-
-        if probe.audio_codec == "aac":
-            audio_args = ["-c:a", "copy"]
-        else:
+        if s.audio_path:
+            inputs = ["-i", s.video_path, "-i", s.audio_path]
+            mapping = ["-map", "[outv]", "-map", "1:a"]
             audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                          "-ar", probe.audio_sample_rate,
-                          "-ac", probe.audio_channels]
+                          "-ar", sr, "-ac", ch]
+        else:
+            inputs = ["-i", s.video_path]
+            mapping = ["-map", "[outv]", "-map", "0:a"]
+            if probe.audio_codec == "aac":
+                audio_args = ["-c:a", "copy"]
+            else:
+                audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
+                              "-ar", sr, "-ac", ch]
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
@@ -277,6 +300,7 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
 class MarathonEpisodeItem:
     video_path: str
     ass_path: str
+    audio_path: str = ""
 
 
 @dataclass
@@ -322,24 +346,37 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
     filter_parts: list[str] = []
     concat_streams: list[str] = []
 
+    current_input_idx = 0
     # Process each episode segment
     for i, ep in enumerate(s.episodes):
         inputs.extend(["-i", ep.video_path])
+        v_idx = current_input_idx
+        current_input_idx += 1
+
+        if ep.audio_path:
+            inputs.extend(["-i", ep.audio_path])
+            a_idx = current_input_idx
+            current_input_idx += 1
+        else:
+            a_idx = v_idx
+
         ass_basename = Path(ep.ass_path).name
 
         filter_parts.append(
-            f"[{i}:v]ass={ass_basename}[v{i}sub];"
+            f"[{v_idx}:v]ass={ass_basename}[v{i}sub];"
             f"[v{i}sub]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}]"
         )
-        concat_streams.append(f"[v{i}][{i}:a]")
+        concat_streams.append(f"[v{i}][{a_idx}:a]")
 
     total_segments = len(s.episodes)
 
     # Attach optional single Endcard at the very end
     if s.endcard_path:
-        endcard_v_idx = len(s.episodes)
-        endcard_a_idx = endcard_v_idx + 1
+        endcard_v_idx = current_input_idx
+        current_input_idx += 1
+        endcard_a_idx = current_input_idx
+        current_input_idx += 1
 
         inputs.extend([
             "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
