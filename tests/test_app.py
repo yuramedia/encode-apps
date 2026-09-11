@@ -1,5 +1,6 @@
 import sys
 import unittest
+from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 from encode_apps.app import MainWindow
 from encode_apps.queue import QueueItem
@@ -88,6 +89,33 @@ class TestMainWindowQueue(unittest.TestCase):
         self.window._marathon_cb.setChecked(True)
         self.assertEqual(self.window._start_btn.text(), "▶  Start Full Episode")
         self.assertTrue(self.window._marathon_out_edit.isVisibleTo(self.window))
+
+    def test_start_marathon_mode(self):
+        from unittest.mock import patch
+        from encode_apps.worker import FullEpisodeWorker
+
+        item1 = QueueItem(video_path="v1.mp4", subtitle_path="s1.ass", output_path="o1.mp4")
+        item2 = QueueItem(video_path="v2.mp4", subtitle_path="s2.ass", output_path="o2.mp4")
+        self.window._queue = [item1, item2]
+        self.window._marathon_cb.setChecked(True)
+
+        with patch("encode_apps.app.check_dependencies", return_value=[]), \
+             patch.object(FullEpisodeWorker, "start") as mock_start:
+            self.window._on_start_queue()
+            self.assertTrue(mock_start.called)
+            self.assertTrue(self.window._is_queue_running)
+            self.assertIsNotNone(self.window._worker)
+
+    def test_marathon_progress_and_finished(self):
+        item = QueueItem(video_path="v1.mp4", subtitle_path="s1.ass", output_path="o1.mp4", status="Encoding")
+        self.window._queue = [item]
+        self.window._on_marathon_progress("frame=240 fps=24 time=00:00:10 speed=1.2x")
+        self.assertEqual(item.progress_text, "frame=240 fps=24 time=00:00:10 speed=1.2x")
+
+        with patch("PySide6.QtWidgets.QMessageBox.information"):
+            self.window._on_marathon_finished(True, "Done")
+            self.assertEqual(item.status, "Completed")
+            self.assertEqual(item.progress_text, "✔ Full Episode")
 
 
 if __name__ == "__main__":

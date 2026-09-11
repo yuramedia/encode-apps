@@ -713,6 +713,19 @@ class MainWindow(QMainWindow):
     # ── Queue Execution ──────────────────────────────────────────────
 
     def _on_start_queue(self) -> None:
+        try:
+            self._do_start_queue()
+        except Exception as exc:
+            self._is_queue_running = False
+            self._start_btn.setEnabled(True)
+            self._cancel_btn.setEnabled(False)
+            self._progress_bar.setVisible(False)
+            self._status_label.setText("Error memulai antrean.")
+            self._status_label.setStyleSheet("color: #e63946; font-size: 13px; font-weight: bold;")
+            self._log_area.appendPlainText(f"ERROR: {exc}")
+            QMessageBox.critical(self, "Error", f"Terjadi kesalahan saat memulai antrean:\n{exc}")
+
+    def _do_start_queue(self) -> None:
         if self._is_queue_running:
             return
 
@@ -775,7 +788,7 @@ class MainWindow(QMainWindow):
             )
 
             self._worker.log.connect(self._on_log)
-            self._worker.progress.connect(self._on_progress)
+            self._worker.progress.connect(self._on_marathon_progress)
             self._worker.finished.connect(self._on_marathon_finished)
             self._worker.start()
             return
@@ -791,6 +804,16 @@ class MainWindow(QMainWindow):
 
         self._run_next_queue_item()
 
+    def _on_marathon_progress(self, msg: str) -> None:
+        self._status_label.setText(msg)
+        for item in self._queue:
+            if item.status == "Encoding":
+                item.progress_text = msg
+        self._refresh_queue_table()
+
+    def _on_progress(self, msg: str) -> None:
+        self._on_marathon_progress(msg)
+
     def _on_marathon_finished(self, success: bool, msg: str) -> None:
         self._progress_bar.setVisible(False)
         self._start_btn.setEnabled(True)
@@ -800,20 +823,30 @@ class MainWindow(QMainWindow):
 
         if success:
             for item in self._queue:
-                item.status = "Completed"
-                item.progress_text = "✔ Full Episode"
+                if item.status == "Encoding":
+                    item.status = "Completed"
+                    item.progress_text = "✔ Full Episode"
             self._status_label.setText("✔ Full Episode Selesai!")
             self._status_label.setStyleSheet("color: #52b788; font-size: 13px; font-weight: bold;")
             self._log_area.appendPlainText(msg)
             QMessageBox.information(self, "Full Episode Selesai", msg)
         else:
-            for item in self._queue:
-                item.status = "Failed"
-                item.progress_text = "✘ Gagal"
-            self._status_label.setText("✘ Full Episode Gagal")
-            self._status_label.setStyleSheet("color: #e63946; font-size: 13px; font-weight: bold;")
-            self._log_area.appendPlainText(f"ERROR: {msg}")
-            QMessageBox.critical(self, "Error", msg)
+            if not self._is_queue_running:
+                for item in self._queue:
+                    if item.status == "Encoding":
+                        item.status = "Cancelled"
+                        item.progress_text = "Dibatalkan"
+                self._status_label.setText("Full Episode dibatalkan.")
+                self._log_area.appendPlainText(msg)
+            else:
+                for item in self._queue:
+                    if item.status == "Encoding":
+                        item.status = "Failed"
+                        item.progress_text = "✘ Gagal"
+                self._status_label.setText("✘ Full Episode Gagal")
+                self._status_label.setStyleSheet("color: #e63946; font-size: 13px; font-weight: bold;")
+                self._log_area.appendPlainText(f"ERROR: {msg}")
+                QMessageBox.critical(self, "Error", msg)
 
         self._refresh_queue_table()
         self._status_label.setStyleSheet("color: #aaa; font-size: 13px;")
