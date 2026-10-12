@@ -117,6 +117,41 @@ class TestMainWindowQueue(unittest.TestCase):
             self.assertEqual(item.status, "Completed")
             self.assertEqual(item.progress_text, "✔ Full Episode")
 
+    def test_clear_audio_field(self):
+        self.window._audio_edit.setText("C:/dub.mp3")
+        self.assertEqual(self.window._audio_edit.text(), "C:/dub.mp3")
+        self.window._audio_edit.clear()
+        self.assertEqual(self.window._audio_edit.text(), "")
+
+    def test_batch_drop_does_not_inherit_configurator_audio(self):
+        from unittest.mock import MagicMock
+        from PySide6.QtCore import QUrl
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            td = Path(tmpdir)
+            vid = td / "ep01.mp4"
+            vid.write_bytes(b"video")
+            sub = td / "ep01.ass"
+            sub.write_bytes(b"sub")
+
+            # Set a stale audio in the UI configurator
+            self.window._audio_edit.setText("C:/stale_24min_audio.mp3")
+
+            mock_event = MagicMock()
+            url_vid = QUrl.fromLocalFile(str(vid))
+            url_sub = QUrl.fromLocalFile(str(sub))
+            mock_event.mimeData().urls.return_value = [url_vid, url_sub]
+
+            self.window.dropEvent(mock_event)
+
+            self.assertEqual(len(self.window._queue), 1)
+            queued_item = self.window._queue[-1]
+            # Must NOT inherit stale audio from self.window._audio_edit
+            self.assertEqual(queued_item.audio_path, "")
+
 
 if __name__ == "__main__":
     unittest.main()
+

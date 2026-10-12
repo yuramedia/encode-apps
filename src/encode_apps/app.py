@@ -159,17 +159,25 @@ def _apply_dark_palette(app: QApplication) -> None:
 # File picker row helper
 # ───────────────────────────────────────────────────────────────────
 
-def _file_row(label_text: str, placeholder: str = "", btn_text: str = "Browse…"):
+def _file_row(label_text: str, placeholder: str = "", btn_text: str = "Browse…", clearable: bool = False):
     row = QHBoxLayout()
     lbl = QLabel(label_text)
     lbl.setFixedWidth(120)
     edit = QLineEdit()
     edit.setPlaceholderText(placeholder)
+    if clearable:
+        edit.setClearButtonEnabled(True)
     btn = QPushButton(btn_text)
     btn.setFixedWidth(90)
     row.addWidget(lbl)
     row.addWidget(edit, 1)
     row.addWidget(btn)
+    if clearable:
+        clear_btn = QPushButton("✕")
+        clear_btn.setToolTip("Hapus / Kosongkan")
+        clear_btn.setFixedWidth(32)
+        clear_btn.clicked.connect(lambda: edit.clear())
+        row.addWidget(clear_btn)
     return row, edit, btn
 
 
@@ -206,11 +214,11 @@ class MainWindow(QMainWindow):
         btn.clicked.connect(self._browse_subtitle)
         lay_input.addLayout(r)
 
-        r, self._audio_edit, btn = _file_row("Dubbing Audio", "(Opsional) Select external audio (*.mp3 *.aac *.m4a *.wav *.flac *.opus)")
+        r, self._audio_edit, btn = _file_row("Dubbing Audio", "(Opsional) Select external audio (*.mp3 *.aac *.m4a *.wav *.flac *.opus)", clearable=True)
         btn.clicked.connect(self._browse_audio)
         lay_input.addLayout(r)
 
-        r, self._endcard_edit, btn = _file_row("Endcard Image", "(Opsional) Select endcard image")
+        r, self._endcard_edit, btn = _file_row("Endcard Image", "(Opsional) Select endcard image", clearable=True)
         btn.clicked.connect(self._browse_endcard)
         lay_input.addLayout(r)
 
@@ -533,7 +541,7 @@ class MainWindow(QMainWindow):
             sub_str = str(sub_p) if sub_p and sub_p.is_file() else self._sub_edit.text().strip()
             if not sub_str:
                 continue
-            aud_str = str(audio_p) if audio_p and audio_p.is_file() else self._audio_edit.text().strip()
+            aud_str = str(audio_p) if audio_p and audio_p.is_file() else ""
             out_str = str(video_p.with_name(video_p.stem + "_hardsub.mp4"))
 
             item = QueueItem(

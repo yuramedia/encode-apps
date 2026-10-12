@@ -241,9 +241,11 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
             filter_complex = (
                 f"[0:v]ass={ass_basename}[v0sub];"
                 f"[v0sub]format=yuv420p[v0];"
+                f"[1:a]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a0];"
                 f"[2:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
-                f"[v0][1:a][v1][3:a]concat=n=2:v=1:a=1[outv][outa]"
+                f"[3:a]aformat=sample_rates={sr}:channel_layouts=stereo[a1];"
+                f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
             )
         else:
             inputs = [
@@ -255,29 +257,35 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
             filter_complex = (
                 f"[0:v]ass={ass_basename}[v0sub];"
                 f"[v0sub]format=yuv420p[v0];"
+                f"[0:a:0]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a0];"
                 f"[1:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
                 f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
-                f"[v0][0:a][v1][2:a]concat=n=2:v=1:a=1[outv][outa]"
+                f"[2:a]aformat=sample_rates={sr}:channel_layouts=stereo[a1];"
+                f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
             )
 
         mapping = ["-map", "[outv]", "-map", "[outa]"]
         audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
                       "-ar", sr, "-ac", ch]
     else:
-        filter_complex = f"[0:v]ass={ass_basename},format=yuv420p[outv]"
         if s.audio_path:
             inputs = ["-i", s.video_path, "-i", s.audio_path]
-            mapping = ["-map", "[outv]", "-map", "1:a"]
+            filter_complex = (
+                f"[0:v]ass={ass_basename},format=yuv420p[outv];"
+                f"[1:a]aresample=async=1:first_pts=0[outa]"
+            )
+            mapping = ["-map", "[outv]", "-map", "[outa]"]
             audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
                           "-ar", sr, "-ac", ch]
         else:
             inputs = ["-i", s.video_path]
-            mapping = ["-map", "[outv]", "-map", "0:a"]
-            if probe.audio_codec == "aac":
-                audio_args = ["-c:a", "copy"]
-            else:
-                audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                              "-ar", sr, "-ac", ch]
+            filter_complex = (
+                f"[0:v]ass={ass_basename},format=yuv420p[outv];"
+                f"[0:a:0]aresample=async=1:first_pts=0[outa]"
+            )
+            mapping = ["-map", "[outv]", "-map", "[outa]"]
+            audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
+                          "-ar", sr, "-ac", ch]
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
@@ -365,9 +373,10 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
         filter_parts.append(
             f"[{v_idx}:v]ass={ass_basename}[v{i}sub];"
             f"[v{i}sub]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}];"
+            f"[{a_idx}:a]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a{i}]"
         )
-        concat_streams.append(f"[v{i}][{a_idx}:a]")
+        concat_streams.append(f"[v{i}][a{i}]")
 
     total_segments = len(s.episodes)
 
@@ -386,9 +395,10 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
 
         filter_parts.append(
             f"[{endcard_v_idx}:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{endcard_v_idx}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{endcard_v_idx}];"
+            f"[{endcard_a_idx}:a]aformat=sample_rates={sr}:channel_layouts=stereo[a{endcard_v_idx}]"
         )
-        concat_streams.append(f"[v{endcard_v_idx}][{endcard_a_idx}:a]")
+        concat_streams.append(f"[v{endcard_v_idx}][a{endcard_v_idx}]")
         total_segments += 1
 
     concat_filter = f"{''.join(concat_streams)}concat=n={total_segments}:v=1:a=1[outv][outa]"
