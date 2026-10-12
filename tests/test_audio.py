@@ -41,39 +41,17 @@ class TestAudioDubbing(unittest.TestCase):
         audio_idx = cmd.index(settings.audio_path)
         self.assertGreater(audio_idx, video_idx)
 
-        # Map replacement audio via [outa] with aresample
+        # Map replacement audio 1:a
         self.assertIn("-map", cmd)
         map_indices = [i for i, x in enumerate(cmd) if x == "-map"]
         mapped_streams = [cmd[i + 1] for i in map_indices]
         self.assertEqual(mapped_streams, ["[outv]", "[outa]"])
 
-        fc_idx = cmd.index("-filter_complex")
-        self.assertIn("[1:a]aresample=async=1:first_pts=0[outa]", cmd[fc_idx + 1])
+        # Dub audio goes through the timestamp-normalising filter, first stream only
+        fc = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
 
         # AAC audio codec
-        c_a_idx = cmd.index("-c:a")
-        self.assertEqual(cmd[c_a_idx + 1], "aac")
-
-    def test_single_encode_native_audio_resampled_and_reencoded(self):
-        # Native audio (even if AAC) must be re-encoded with aresample to prevent audio drop
-        settings = EncodeSettings(
-            video_path="/media/long_ep01.mp4",
-            ass_path="/temp/subs.ass",
-            output_path="/media/long_ep01_out.mp4",
-            audio_path="",
-            probe=self.probe,
-        )
-        cmd = build_ffmpeg_command(settings)
-
-        map_indices = [i for i, x in enumerate(cmd) if x == "-map"]
-        mapped_streams = [cmd[i + 1] for i in map_indices]
-        self.assertEqual(mapped_streams, ["[outv]", "[outa]"])
-
-        fc_idx = cmd.index("-filter_complex")
-        self.assertIn("[0:a:0]aresample=async=1:first_pts=0[outa]", cmd[fc_idx + 1])
-
-        # Never stream copy (-c:a copy)
-        self.assertNotIn("copy", cmd)
         c_a_idx = cmd.index("-c:a")
         self.assertEqual(cmd[c_a_idx + 1], "aac")
 
@@ -97,10 +75,9 @@ class TestAudioDubbing(unittest.TestCase):
         filter_idx = cmd.index("-filter_complex")
         fc = cmd[filter_idx + 1]
 
-        # Audio streams are normalized to a0 and a1 before concat
-        self.assertIn("[1:a]aresample=async=1:first_pts=0,aformat=sample_rates=48000:channel_layouts=stereo[a0]", fc)
-        self.assertIn("[3:a]aformat=sample_rates=48000:channel_layouts=stereo[a1]", fc)
-        self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", fc)
+        # Dub (input 1) is normalised into [a0]; 3:a is the anullsrc endcard track
+        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
+        self.assertIn("[v0][a0][v1][3:a]concat=n=2:v=1:a=1[outv][outa]", fc)
 
     def test_marathon_with_mixed_dubbing(self):
         ep1 = MarathonEpisodeItem(
@@ -128,9 +105,9 @@ class TestAudioDubbing(unittest.TestCase):
         filter_idx = cmd.index("-filter_complex")
         fc = cmd[filter_idx + 1]
 
-        # Normalized audio inputs [a0] and [a1]
-        self.assertIn("[1:a]aresample=async=1:first_pts=0,aformat=sample_rates=48000:channel_layouts=stereo[a0]", fc)
-        self.assertIn("[2:a]aresample=async=1:first_pts=0,aformat=sample_rates=48000:channel_layouts=stereo[a1]", fc)
+        # ep1 uses dub audio (input 1), ep2 its native audio (input 2)
+        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
+        self.assertIn("[2:a:0]aresample=async=1:first_pts=0", fc)
         self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", fc)
 
     def test_marathon_with_dubbing_and_endcard(self):
@@ -162,7 +139,7 @@ class TestAudioDubbing(unittest.TestCase):
         filter_idx = cmd.index("-filter_complex")
         fc = cmd[filter_idx + 1]
 
-        self.assertIn("[v0][a0][v1][a1][v4][a4]concat=n=3:v=1:a=1[outv][outa]", fc)
+        self.assertIn("[v0][a0][v1][a1][v4][5:a]concat=n=3:v=1:a=1[outv][outa]", fc)
 
 
 if __name__ == "__main__":

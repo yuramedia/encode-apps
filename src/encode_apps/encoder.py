@@ -178,6 +178,42 @@ def probe_video(path: str | Path) -> ProbeResult:
 
 
 # ---------------------------------------------------------------------------
+# Audio normalisation helpers
+# ---------------------------------------------------------------------------
+
+# ffprobe channel count -> ffmpeg channel layout name
+_CHANNEL_LAYOUTS = {"1": "mono", "2": "stereo", "6": "5.1", "8": "7.1"}
+
+
+def audio_params(probe: ProbeResult) -> tuple[str, str, str]:
+    """Return ``(sample_rate, channel_layout, channel_count)`` for the output.
+
+    Unusual channel counts fall back to stereo so that every concat segment
+    (including the silent ``anullsrc`` endcard track) shares one layout.
+    """
+    sr = probe.audio_sample_rate or "48000"
+    ch = str(probe.audio_channels or "2")
+    layout = _CHANNEL_LAYOUTS.get(ch)
+    if layout is None:
+        layout, ch = "stereo", "2"
+    return sr, layout, ch
+
+
+def normalize_audio_filter(src: str, dst: str, sr: str, layout: str) -> str:
+    """Filter-graph chain that always decodes the audio and fixes its timeline.
+
+    ``aresample=async=1:first_pts=0`` pads gaps with silence, trims overlaps and
+    makes the stream start at t=0, so broken/discontinuous source timestamps
+    can no longer make the audio drop out part-way through the file.
+    ``aformat`` pins sample rate / layout so ``concat`` never sees a mismatch.
+    """
+    return (
+        f"[{src}]aresample=async=1:first_pts=0,"
+        f"aformat=sample_rates={sr}:channel_layouts={layout}[{dst}]"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Command builder
 # ---------------------------------------------------------------------------
 
@@ -207,8 +243,7 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
     a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
-    sr = probe.audio_sample_rate or "48000"
-    ch = probe.audio_channels or "2"
+    sr, layout, ch = audio_params(probe)
 
     # x264 args
     x264 = [
@@ -226,6 +261,12 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     # ass filename (we chdir into the temp dir, so just the basename)
     ass_basename = Path(s.ass_path).name
 
+    # Audio is ALWAYS decoded, timestamp-normalised and re-encoded (never
+    # ``-c:a copy``), and only the first audio stream of the chosen source is used.
+    audio_args = ["-c:a", "aac", "-b:a", a_bitrate, "-ar", sr, "-ac", ch]
+    audio_src = "1:a:0" if s.audio_path else "0:a:0"
+    audio_norm = normalize_audio_filter(audio_src, "a0", sr, layout)
+
     if s.endcard_path:
         w, h = probe.width or 1920, probe.height or 1080
         fps = probe.fps or "24000/1001"
@@ -236,56 +277,36 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
                 "-i", s.audio_path,
                 "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
                 "-f", "lavfi", "-t", str(s.endcard_seconds),
-                "-i", f"anullsrc=r={sr}:cl=stereo",
+                "-i", f"anullsrc=r={sr}:cl={layout}",
             ]
-            filter_complex = (
-                f"[0:v]ass={ass_basename}[v0sub];"
-                f"[v0sub]format=yuv420p[v0];"
-                f"[1:a]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a0];"
-                f"[2:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
-                f"[3:a]aformat=sample_rates={sr}:channel_layouts=stereo[a1];"
-                f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
-            )
+            endcard_v, endcard_a = 2, 3
         else:
             inputs = [
                 "-i", s.video_path,
                 "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
                 "-f", "lavfi", "-t", str(s.endcard_seconds),
-                "-i", f"anullsrc=r={sr}:cl=stereo",
+                "-i", f"anullsrc=r={sr}:cl={layout}",
             ]
-            filter_complex = (
-                f"[0:v]ass={ass_basename}[v0sub];"
-                f"[v0sub]format=yuv420p[v0];"
-                f"[0:a:0]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a0];"
-                f"[1:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
-                f"[2:a]aformat=sample_rates={sr}:channel_layouts=stereo[a1];"
-                f"[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]"
-            )
+            endcard_v, endcard_a = 1, 2
 
-        mapping = ["-map", "[outv]", "-map", "[outa]"]
-        audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                      "-ar", sr, "-ac", ch]
+        filter_complex = (
+            f"[0:v]ass={ass_basename}[v0sub];"
+            f"[v0sub]format=yuv420p[v0];"
+            f"[{endcard_v}:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
+            f"{audio_norm};"
+            f"[v0][a0][v1][{endcard_a}:a]concat=n=2:v=1:a=1[outv][outa]"
+        )
     else:
+        inputs = ["-i", s.video_path]
         if s.audio_path:
-            inputs = ["-i", s.video_path, "-i", s.audio_path]
-            filter_complex = (
-                f"[0:v]ass={ass_basename},format=yuv420p[outv];"
-                f"[1:a]aresample=async=1:first_pts=0[outa]"
-            )
-            mapping = ["-map", "[outv]", "-map", "[outa]"]
-            audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                          "-ar", sr, "-ac", ch]
-        else:
-            inputs = ["-i", s.video_path]
-            filter_complex = (
-                f"[0:v]ass={ass_basename},format=yuv420p[outv];"
-                f"[0:a:0]aresample=async=1:first_pts=0[outa]"
-            )
-            mapping = ["-map", "[outv]", "-map", "[outa]"]
-            audio_args = ["-c:a", "aac", "-b:a", a_bitrate,
-                          "-ar", sr, "-ac", ch]
+            inputs += ["-i", s.audio_path]
+        filter_complex = (
+            f"[0:v]ass={ass_basename},format=yuv420p[outv];"
+            f"{normalize_audio_filter(audio_src, 'outa', sr, layout)}"
+        )
+
+    mapping = ["-map", "[outv]", "-map", "[outa]"]
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
@@ -331,8 +352,7 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
     probe = s.probe
     w, h = probe.width or 1920, probe.height or 1080
     fps = probe.fps or "24000/1001"
-    sr = probe.audio_sample_rate or "48000"
-    ch = probe.audio_channels or "2"
+    sr, layout, ch = audio_params(probe)
 
     v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
@@ -373,9 +393,10 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
         filter_parts.append(
             f"[{v_idx}:v]ass={ass_basename}[v{i}sub];"
             f"[v{i}sub]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}];"
-            f"[{a_idx}:a]aresample=async=1:first_pts=0,aformat=sample_rates={sr}:channel_layouts=stereo[a{i}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}]"
         )
+        # Normalise each episode's audio timeline before concat
+        filter_parts.append(normalize_audio_filter(f"{a_idx}:a:0", f"a{i}", sr, layout))
         concat_streams.append(f"[v{i}][a{i}]")
 
     total_segments = len(s.episodes)
@@ -390,15 +411,14 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
         inputs.extend([
             "-loop", "1", "-t", str(s.endcard_seconds), "-i", s.endcard_path,
             "-f", "lavfi", "-t", str(s.endcard_seconds),
-            "-i", f"anullsrc=r={sr}:cl=stereo",
+            "-i", f"anullsrc=r={sr}:cl={layout}",
         ])
 
         filter_parts.append(
             f"[{endcard_v_idx}:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
-            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{endcard_v_idx}];"
-            f"[{endcard_a_idx}:a]aformat=sample_rates={sr}:channel_layouts=stereo[a{endcard_v_idx}]"
+            f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{endcard_v_idx}]"
         )
-        concat_streams.append(f"[v{endcard_v_idx}][a{endcard_v_idx}]")
+        concat_streams.append(f"[v{endcard_v_idx}][{endcard_a_idx}:a]")
         total_segments += 1
 
     concat_filter = f"{''.join(concat_streams)}concat=n={total_segments}:v=1:a=1[outv][outa]"

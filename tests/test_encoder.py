@@ -2,6 +2,7 @@ import unittest
 from encode_apps.encoder import (
     EncodeSettings,
     ProbeResult,
+    audio_params,
     build_ffmpeg_command,
     normalize_profile,
 )
@@ -61,6 +62,51 @@ class TestEncoder(unittest.TestCase):
         self.assertIn("endcard.png", cmd)
         self.assertIn("anullsrc=r=48000:cl=stereo", " ".join(cmd))
         self.assertIn("concat=n=2:v=1:a=1", " ".join(cmd))
+
+    def _fc(self, cmd):
+        return cmd[cmd.index("-filter_complex") + 1]
+
+    def test_audio_is_never_stream_copied(self):
+        # AAC source used to be passed through with ``-c:a copy``; broken source
+        # timestamps then made the audio drop out part-way through.
+        probe = ProbeResult(audio_codec="aac", audio_bitrate="192k")
+        cmd = build_ffmpeg_command(
+            EncodeSettings(video_path="in.mp4", ass_path="subs.ass",
+                           output_path="out.mp4", probe=probe)
+        )
+        self.assertNotIn("copy", cmd)
+        self.assertEqual(cmd[cmd.index("-c:a") + 1], "aac")
+
+    def test_audio_normalised_and_first_stream_only(self):
+        cmd = build_ffmpeg_command(
+            EncodeSettings(video_path="in.mp4", ass_path="subs.ass",
+                           output_path="out.mp4", probe=ProbeResult())
+        )
+        fc = self._fc(cmd)
+        self.assertIn(
+            "[0:a:0]aresample=async=1:first_pts=0,"
+            "aformat=sample_rates=48000:channel_layouts=stereo[outa]",
+            fc,
+        )
+        maps = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-map"]
+        self.assertEqual(maps, ["[outv]", "[outa]"])
+        self.assertNotIn("-af", cmd)  # cannot be combined with -filter_complex
+
+    def test_endcard_audio_layout_follows_source(self):
+        probe = ProbeResult(audio_sample_rate="44100", audio_channels="6")
+        cmd = build_ffmpeg_command(
+            EncodeSettings(video_path="in.mp4", ass_path="subs.ass",
+                           output_path="out.mp4", endcard_path="end.png", probe=probe)
+        )
+        joined = " ".join(cmd)
+        self.assertIn("anullsrc=r=44100:cl=5.1", joined)
+        self.assertIn("channel_layouts=5.1", self._fc(cmd))
+        self.assertEqual(cmd[cmd.index("-ac") + 1], "6")
+
+    def test_unusual_channel_count_falls_back_to_stereo(self):
+        probe = ProbeResult(audio_channels="3")
+        sr, layout, ch = audio_params(probe)
+        self.assertEqual((sr, layout, ch), ("48000", "stereo", "2"))
 
 
 if __name__ == "__main__":
