@@ -74,8 +74,7 @@ class TestMarathonEncoder(unittest.TestCase):
         fc = cmd[cmd.index("-filter_complex") + 1]
         for i in range(2):
             self.assertIn(
-                f"[{i}:a:0]aresample=async=1:first_pts=0,"
-                f"aformat=sample_rates=48000:channel_layouts=stereo[a{i}]",
+                f"[{i}:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]",
                 fc,
             )
         self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", fc)

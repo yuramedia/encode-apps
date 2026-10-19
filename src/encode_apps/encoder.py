@@ -199,18 +199,12 @@ def audio_params(probe: ProbeResult) -> tuple[str, str, str]:
     return sr, layout, ch
 
 
-def normalize_audio_filter(src: str, dst: str, sr: str, layout: str) -> str:
-    """Filter-graph chain that always decodes the audio and fixes its timeline.
+def format_audio_for_concat(src: str, dst: str, sr: str, layout: str) -> str:
+    """Pin sample rate / layout with aformat so concat filter never sees a mismatch.
 
-    ``aresample=async=1:first_pts=0`` pads gaps with silence, trims overlaps and
-    makes the stream start at t=0, so broken/discontinuous source timestamps
-    can no longer make the audio drop out part-way through the file.
-    ``aformat`` pins sample rate / layout so ``concat`` never sees a mismatch.
+    Does not alter audio PCM samples or timestamps (no sample trimming or dropping).
     """
-    return (
-        f"[{src}]aresample=async=1:first_pts=0,"
-        f"aformat=sample_rates={sr}:channel_layouts={layout}[{dst}]"
-    )
+    return f"[{src}]aformat=sample_rates={sr}:channel_layouts={layout}[{dst}]"
 
 
 # ---------------------------------------------------------------------------
@@ -261,11 +255,9 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     # ass filename (we chdir into the temp dir, so just the basename)
     ass_basename = Path(s.ass_path).name
 
-    # Audio is ALWAYS decoded, timestamp-normalised and re-encoded (never
-    # ``-c:a copy``), and only the first audio stream of the chosen source is used.
+    # Audio is decoded and re-encoded cleanly (never ``-c:a copy``)
     audio_args = ["-c:a", "aac", "-b:a", a_bitrate, "-ar", sr, "-ac", ch]
     audio_src = "1:a:0" if s.audio_path else "0:a:0"
-    audio_norm = normalize_audio_filter(audio_src, "a0", sr, layout)
 
     if s.endcard_path:
         w, h = probe.width or 1920, probe.height or 1080
@@ -289,6 +281,7 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
             ]
             endcard_v, endcard_a = 1, 2
 
+        audio_norm = format_audio_for_concat(audio_src, "a0", sr, layout)
         filter_complex = (
             f"[0:v]ass={ass_basename}[v0sub];"
             f"[v0sub]format=yuv420p[v0];"
@@ -297,16 +290,13 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
             f"{audio_norm};"
             f"[v0][a0][v1][{endcard_a}:a]concat=n=2:v=1:a=1[outv][outa]"
         )
+        mapping = ["-map", "[outv]", "-map", "[outa]"]
     else:
         inputs = ["-i", s.video_path]
         if s.audio_path:
             inputs += ["-i", s.audio_path]
-        filter_complex = (
-            f"[0:v]ass={ass_basename},format=yuv420p[outv];"
-            f"{normalize_audio_filter(audio_src, 'outa', sr, layout)}"
-        )
-
-    mapping = ["-map", "[outv]", "-map", "[outa]"]
+        filter_complex = f"[0:v]ass={ass_basename},format=yuv420p[outv]"
+        mapping = ["-map", "[outv]", "-map", audio_src]
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
@@ -395,8 +385,8 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
             f"[v{i}sub]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v{i}]"
         )
-        # Normalise each episode's audio timeline before concat
-        filter_parts.append(normalize_audio_filter(f"{a_idx}:a:0", f"a{i}", sr, layout))
+        # Format each episode's audio for concat
+        filter_parts.append(format_audio_for_concat(f"{a_idx}:a:0", f"a{i}", sr, layout))
         concat_streams.append(f"[v{i}][a{i}]")
 
     total_segments = len(s.episodes)

@@ -83,13 +83,9 @@ class TestEncoder(unittest.TestCase):
                            output_path="out.mp4", probe=ProbeResult())
         )
         fc = self._fc(cmd)
-        self.assertIn(
-            "[0:a:0]aresample=async=1:first_pts=0,"
-            "aformat=sample_rates=48000:channel_layouts=stereo[outa]",
-            fc,
-        )
+        self.assertEqual(fc, "[0:v]ass=subs.ass,format=yuv420p[outv]")
         maps = [cmd[i + 1] for i, x in enumerate(cmd) if x == "-map"]
-        self.assertEqual(maps, ["[outv]", "[outa]"])
+        self.assertEqual(maps, ["[outv]", "0:a:0"])
         self.assertNotIn("-af", cmd)  # cannot be combined with -filter_complex
 
     def test_endcard_audio_layout_follows_source(self):

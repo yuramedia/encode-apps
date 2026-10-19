@@ -41,15 +41,15 @@ class TestAudioDubbing(unittest.TestCase):
         audio_idx = cmd.index(settings.audio_path)
         self.assertGreater(audio_idx, video_idx)
 
-        # Map replacement audio 1:a
+        # Map replacement audio 1:a:0 directly without audio filters
         self.assertIn("-map", cmd)
         map_indices = [i for i, x in enumerate(cmd) if x == "-map"]
         mapped_streams = [cmd[i + 1] for i in map_indices]
-        self.assertEqual(mapped_streams, ["[outv]", "[outa]"])
+        self.assertEqual(mapped_streams, ["[outv]", "1:a:0"])
 
-        # Dub audio goes through the timestamp-normalising filter, first stream only
+        # In single encode, no audio filters exist in filter_complex
         fc = cmd[cmd.index("-filter_complex") + 1]
-        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
+        self.assertEqual(fc, "[0:v]ass=subs.ass,format=yuv420p[outv]")
 
         # AAC audio codec
         c_a_idx = cmd.index("-c:a")
@@ -75,8 +75,8 @@ class TestAudioDubbing(unittest.TestCase):
         filter_idx = cmd.index("-filter_complex")
         fc = cmd[filter_idx + 1]
 
-        # Dub (input 1) is normalised into [a0]; 3:a is the anullsrc endcard track
-        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
+        # Dub (input 1) is formatted into [a0]; 3:a is the anullsrc endcard track
+        self.assertIn("[1:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a0]", fc)
         self.assertIn("[v0][a0][v1][3:a]concat=n=2:v=1:a=1[outv][outa]", fc)
 
     def test_marathon_with_mixed_dubbing(self):
@@ -106,8 +106,8 @@ class TestAudioDubbing(unittest.TestCase):
         fc = cmd[filter_idx + 1]
 
         # ep1 uses dub audio (input 1), ep2 its native audio (input 2)
-        self.assertIn("[1:a:0]aresample=async=1:first_pts=0", fc)
-        self.assertIn("[2:a:0]aresample=async=1:first_pts=0", fc)
+        self.assertIn("[1:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a0]", fc)
+        self.assertIn("[2:a:0]aformat=sample_rates=48000:channel_layouts=stereo[a1]", fc)
         self.assertIn("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]", fc)
 
     def test_marathon_with_dubbing_and_endcard(self):
