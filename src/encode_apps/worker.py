@@ -161,6 +161,21 @@ class EncodeWorker(QThread):
             self.log.emit(f"  Dubbing audio: {Path(self.audio_path).name}")
 
         # ── Step 3: build & run ffmpeg ───────────────────────────────
+        # The dubbing track replaces the source audio entirely, so its own
+        # sample rate / channel layout / bitrate must drive the output —
+        # taking them from the video would force e.g. a stereo dub into the
+        # video's 5.1 layout and remap the dialogue into the centre channel.
+        audio_probe = None
+        if self.audio_path:
+            dub_probe = probe_video(self.audio_path)
+            if dub_probe.audio_codec or dub_probe.audio_sample_rate:
+                audio_probe = dub_probe
+                self.log.emit(
+                    f"    Audio dub: {dub_probe.audio_codec} "
+                    f"{dub_probe.audio_sample_rate} Hz "
+                    f"{dub_probe.audio_channels}ch"
+                )
+
         settings = EncodeSettings(
             video_path=self.video_path,
             ass_path=ass_path,
@@ -172,6 +187,7 @@ class EncodeWorker(QThread):
             audio_bitrate=self.audio_bitrate,
             preset=self.preset,
             probe=probe,
+            audio_probe=audio_probe,
         )
         cmd = build_ffmpeg_command(settings)
         self.log.emit(f"Meng-encode 1-pass dengan ffmpeg (preset: {self.preset})…")
@@ -306,11 +322,33 @@ class FullEpisodeWorker(QThread):
                     return
 
             probe = probe_video(item.video_path)
-            if primary_probe is None:
-                primary_probe = probe
-
+            audio_probe = None
             if item.audio_path:
                 self.log.emit(f"    (Dubbing audio: {Path(item.audio_path).name})")
+                dub_probe = probe_video(item.audio_path)
+                if dub_probe.audio_codec or dub_probe.audio_sample_rate:
+                    audio_probe = dub_probe
+
+            if primary_probe is None:
+                # If the first episode carries a dubbing track, its audio
+                # properties must drive the marathon concat layout rather than
+                # the video's native audio layout.
+                if audio_probe:
+                    primary_probe = ProbeResult(
+                        width=probe.width,
+                        height=probe.height,
+                        fps=probe.fps,
+                        video_bitrate=probe.video_bitrate,
+                        video_profile=probe.video_profile,
+                        video_level=probe.video_level,
+                        audio_codec=audio_probe.audio_codec or probe.audio_codec,
+                        audio_bitrate=audio_probe.audio_bitrate or probe.audio_bitrate,
+                        audio_sample_rate=audio_probe.audio_sample_rate or probe.audio_sample_rate,
+                        audio_channels=audio_probe.audio_channels or probe.audio_channels,
+                        duration_seconds=probe.duration_seconds,
+                    )
+                else:
+                    primary_probe = probe
 
             marathon_episodes.append(
                 MarathonEpisodeItem(
