@@ -135,6 +135,21 @@ def probe_video(path: str | Path) -> ProbeResult:
         except Exception:
             pass
 
+    # Fallback: audio bitrate from format if audio-only file
+    if not pr.audio_bitrate and not pr.width:
+        try:
+            out = _run_probe([
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=bit_rate",
+                "-of", "json", path,
+            ])
+            data = json.loads(out)
+            fbit = data.get("format", {}).get("bit_rate", "")
+            if fbit and fbit != "N/A":
+                pr.audio_bitrate = fbit
+        except Exception:
+            pass
+
     # Audio stream info
     try:
         out = _run_probe([
@@ -161,6 +176,21 @@ def probe_video(path: str | Path) -> ProbeResult:
     except Exception:
         pass
 
+    # Fallback: audio bitrate from format (audio-only files often have no stream bit_rate)
+    if not pr.audio_bitrate and not pr.width:
+        try:
+            out = _run_probe([
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=bit_rate",
+                "-of", "json", path,
+            ])
+            data = json.loads(out)
+            fbit = data.get("format", {}).get("bit_rate", "")
+            if fbit and fbit != "N/A":
+                pr.audio_bitrate = fbit
+        except Exception:
+            pass
+
     # Duration
     try:
         out = _run_probe([
@@ -175,6 +205,41 @@ def probe_video(path: str | Path) -> ProbeResult:
         pass
 
     return pr
+
+
+def probe_audio_duration(path: str | Path) -> float:
+    """Return the duration of the first audio stream in *path* (0.0 if unknown).
+
+    The audio stream can be shorter or longer than the video stream, and a
+    declick fade has to be placed against the *audio* timeline, not the video's.
+    """
+    path_str = str(path)
+    try:
+        out = _run_probe([
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=duration",
+            "-of", "json", path_str,
+        ])
+        data = json.loads(out)
+        dur = data.get("streams", [{}])[0].get("duration", "")
+        if dur and dur != "N/A":
+            return float(dur)
+    except Exception:
+        pass
+
+    try:
+        out = _run_probe([
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "json", path_str,
+        ])
+        data = json.loads(out)
+        dur = data.get("format", {}).get("duration", "")
+        if dur and dur != "N/A":
+            return float(dur)
+    except Exception:
+        pass
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +262,29 @@ def audio_params(probe: ProbeResult) -> tuple[str, str, str]:
     if layout is None:
         layout, ch = "stereo", "2"
     return sr, layout, ch
+
+
+# A re-encode below this bitrate is audibly broken: the native AAC encoder
+# quantises hard and the result crackles. Sources often report a low bitrate
+# (e.g. 64k-128k for a mono track), so auto-detected values are raised to
+# this floor. An explicitly typed bitrate is always honoured.
+MIN_AUDIO_BITRATE = 192000
+
+
+def resolve_audio_bitrate(requested: str, probe: ProbeResult) -> str:
+    """Return the ``-b:a`` value, raising an auto-detected bitrate to the floor."""
+    if requested:
+        return requested
+    detected = probe.audio_bitrate
+    if not detected:
+        return "320k"
+    try:
+        bps = int(detected)
+    except (TypeError, ValueError):
+        return detected
+    if bps < MIN_AUDIO_BITRATE:
+        return f"{MIN_AUDIO_BITRATE // 1000}k"
+    return detected
 
 
 def format_audio_for_concat(src: str, dst: str, sr: str, layout: str) -> str:
@@ -226,6 +314,7 @@ class EncodeSettings:
     preset: str = "slow"
     # Probed values (filled by caller)
     probe: ProbeResult = field(default_factory=ProbeResult)
+    audio_probe: ProbeResult | None = None
 
 
 def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
@@ -233,11 +322,24 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
 
     probe = s.probe
 
+    # If dubbing audio is specified, resolve its probed audio characteristics
+    audio_probe = s.audio_probe
+    if s.audio_path and audio_probe is None:
+        try:
+            if Path(s.audio_path).is_file():
+                ap = probe_video(s.audio_path)
+                if ap.audio_codec or ap.audio_channels:
+                    audio_probe = ap
+        except Exception:
+            pass
+
+    effective_audio = audio_probe or probe
+
     # Resolve profile & bitrates
     v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
-    a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
-    sr, layout, ch = audio_params(probe)
+    a_bitrate = resolve_audio_bitrate(s.audio_bitrate, effective_audio)
+    sr, layout, ch = audio_params(effective_audio)
 
     # x264 args
     x264 = [
@@ -346,7 +448,7 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
 
     v_profile = normalize_profile(probe.video_profile)
     v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
-    a_bitrate = s.audio_bitrate or probe.audio_bitrate or "320k"
+    a_bitrate = resolve_audio_bitrate(s.audio_bitrate, probe)
 
     x264 = [
         "-c:v", "libx264",

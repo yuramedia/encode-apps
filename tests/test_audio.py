@@ -141,6 +141,71 @@ class TestAudioDubbing(unittest.TestCase):
 
         self.assertIn("[v0][a0][v1][a1][v4][5:a]concat=n=3:v=1:a=1[outv][outa]", fc)
 
+    def test_single_encode_with_dubbing_audio_probe_precedence(self):
+        # Video is 5.1 surround (6 channels) at 44.1kHz, but dubbing is stereo at 48kHz.
+        # Output audio should follow the dubbing audio probe (stereo 48kHz, -ac 2),
+        # not the video probe (which would force -ac 6 and channel_layouts=5.1).
+        video_probe = ProbeResult(
+            width=1920,
+            height=1080,
+            fps="24000/1001",
+            video_bitrate="5000k",
+            audio_codec="aac",
+            audio_bitrate="384k",
+            audio_sample_rate="44100",
+            audio_channels="6",
+        )
+        dub_probe = ProbeResult(
+            audio_codec="mp3",
+            audio_bitrate="192000",
+            audio_sample_rate="48000",
+            audio_channels="2",
+        )
+        settings = EncodeSettings(
+            video_path="/media/ep01.mp4",
+            ass_path="/temp/subs.ass",
+            output_path="/media/ep01_out.mp4",
+            audio_path="/media/ep01_dub.mp3",
+            probe=video_probe,
+            audio_probe=dub_probe,
+        )
+        cmd = build_ffmpeg_command(settings)
+        ac_idx = cmd.index("-ac")
+        self.assertEqual(cmd[ac_idx + 1], "2")
+        ar_idx = cmd.index("-ar")
+        self.assertEqual(cmd[ar_idx + 1], "48000")
+
+    def test_auto_audio_bitrate_floor(self):
+        # A source reporting low stream bitrate (e.g. 64k mono) must be clamped
+        # to at least 192k when auto-detected to prevent AAC quantization crackle.
+        low_probe = ProbeResult(
+            audio_codec="aac",
+            audio_bitrate="64000",
+            audio_sample_rate="48000",
+            audio_channels="2",
+        )
+        settings = EncodeSettings(
+            video_path="/media/ep01.mp4",
+            ass_path="/temp/subs.ass",
+            output_path="/media/ep01_out.mp4",
+            probe=low_probe,
+        )
+        cmd = build_ffmpeg_command(settings)
+        ba_idx = cmd.index("-b:a")
+        self.assertEqual(cmd[ba_idx + 1], "192k")
+
+        # Explicit user bitrate must be honoured even if below floor
+        settings_explicit = EncodeSettings(
+            video_path="/media/ep01.mp4",
+            ass_path="/temp/subs.ass",
+            output_path="/media/ep01_out.mp4",
+            audio_bitrate="96k",
+            probe=low_probe,
+        )
+        cmd_explicit = build_ffmpeg_command(settings_explicit)
+        ba_idx_exp = cmd_explicit.index("-b:a")
+        self.assertEqual(cmd_explicit[ba_idx_exp + 1], "96k")
+
 
 if __name__ == "__main__":
     unittest.main()
