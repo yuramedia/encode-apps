@@ -47,21 +47,48 @@ class ProbeResult:
 
 
 def normalize_profile(raw_profile: str) -> str:
-    """Map ffprobe profile names to valid x264 -profile:v strings."""
+    """Map ffprobe profile names to valid x264 -profile:v strings.
+
+    10-bit sources (HEVC ``Main 10``, H.264 ``High 10``) must map to ``high10``
+    BEFORE the plain ``main``/``high`` substring checks, otherwise ``Main 10``
+    falls through to ``main`` and the output is silently downgraded to 8-bit.
+    """
     p = raw_profile.lower().strip()
+    if ("10" in p and ("high" in p or "main" in p)) or "high10" in p:
+        return "high10"
+    if "4:2:2" in p:
+        return "high422"
+    if "4:4:4" in p:
+        return "high444"
     if "constrained baseline" in p or "baseline" in p:
         return "baseline"
     elif "main" in p:
         return "main"
-    elif "high 10" in p or "high10" in p:
-        return "high10"
-    elif "high 4:2:2" in p or "high422" in p:
-        return "high422"
-    elif "high 4:4:4" in p or "high444" in p:
-        return "high444"
     elif "high" in p:
         return "high"
     return "main"
+
+
+def normalize_level(raw_level: str) -> str:
+    """Map a codec level string to an x264-acceptable ``-level`` value.
+
+    HEVC reports ``level_idc`` (30, 60, ..., 186) while x264 expects 1.0-5.2
+    decimals; passing ``120`` makes libx264 abort with "Invalid argument".
+    Returns "" for anything unusable so the caller can omit the flag.
+    """
+    raw = (raw_level or "").strip()
+    if not raw:
+        return ""
+    try:
+        val = float(raw)
+    except ValueError:
+        return ""
+    if 0 < val <= 6.2:
+        # H.264 sources already report "4.0"-style strings
+        return raw
+    if val >= 30 and val % 30 == 0:
+        return f"{val / 30.0:.1f}"
+    return ""
 
 
 def _run_probe(args: list[str]) -> str:
@@ -295,6 +322,46 @@ def format_audio_for_concat(src: str, dst: str, sr: str, layout: str) -> str:
     return f"[{src}]aformat=sample_rates={sr}:channel_layouts={layout}[{dst}]"
 
 
+def _parse_fps(raw: str) -> float:
+    """Parse an ffprobe frame rate like ``24000/1001`` or ``25/1``."""
+    try:
+        if "/" in raw:
+            num, den = raw.split("/", 1)
+            num_f, den_f = float(num), float(den)
+            if den_f > 0:
+                return num_f / den_f
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# Auto-detected video bitrate below this is unreliable: quality-mode (CRF/QP)
+# sources — the norm for HEVC anime releases — report tiny or meaningless
+# bit_rate values, and re-encoding at that value destroys the picture
+# (measured: 1080p gradient source at a probed 24 kbps → posterised output).
+# Floor = 8 bits-per-pixel-second ≈ 4 Mbps at 1080p24. Explicit values honoured.
+MIN_VIDEO_BPP = 0.08
+MIN_VIDEO_BITRATE = 2_500_000
+
+
+def resolve_video_bitrate(requested: str, probe: ProbeResult) -> str:
+    """Return the ``-b:v`` value, raising an unreliable auto-detected bitrate."""
+    if requested:
+        return requested
+    detected = (probe.video_bitrate or "").strip()
+    try:
+        bps = int(detected)
+    except (TypeError, ValueError):
+        bps = 0
+    w = probe.width or 1920
+    h = probe.height or 1080
+    fps = _parse_fps(probe.fps) or 24.0
+    floor = max(MIN_VIDEO_BITRATE, int(w * h * fps * MIN_VIDEO_BPP))
+    if bps < floor:
+        return str(floor)
+    return detected
+
+
 # ---------------------------------------------------------------------------
 # Command builder
 # ---------------------------------------------------------------------------
@@ -337,7 +404,8 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
 
     # Resolve profile & bitrates
     v_profile = normalize_profile(probe.video_profile)
-    v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
+    v_bitrate = resolve_video_bitrate(s.video_bitrate, probe)
+    v_level = normalize_level(probe.video_level)
     a_bitrate = resolve_audio_bitrate(s.audio_bitrate, effective_audio)
     sr, layout, ch = audio_params(effective_audio)
 
@@ -345,7 +413,7 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     x264 = [
         "-c:v", "libx264",
         "-profile:v", v_profile,
-        "-level", probe.video_level,
+        *(["-level", v_level] if v_level else []),
         "-refs", "3", "-bf", "0",
         "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-coder", "ac",
@@ -357,8 +425,12 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
     # ass filename (we chdir into the temp dir, so just the basename)
     ass_basename = Path(s.ass_path).name
 
+    # A video-only source (no audio stream, no dubbing file) must not be
+    # mapped: "-map 0:a:0" aborts the whole encode with "matches no streams".
+    has_audio = bool(s.audio_path) or bool(effective_audio.audio_codec)
+
     # Audio is decoded and re-encoded cleanly (never ``-c:a copy``)
-    audio_args = ["-c:a", "aac", "-b:a", a_bitrate, "-ar", sr, "-ac", ch]
+    audio_args = ["-c:a", "aac", "-b:a", a_bitrate, "-ar", sr, "-ac", ch] if has_audio else []
     audio_src = "1:a:0" if s.audio_path else "0:a:0"
 
     if s.endcard_path:
@@ -383,14 +455,20 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
             ]
             endcard_v, endcard_a = 1, 2
 
-        audio_norm = format_audio_for_concat(audio_src, "a0", sr, layout)
+        if has_audio:
+            audio_norm = format_audio_for_concat(audio_src, "a0", sr, layout)
+            segment_audio = "[a0]"
+        else:
+            # the silent anullsrc endcard track also carries the main segment
+            audio_norm, segment_audio = "", f"[{endcard_a}:a]"
+            audio_args = ["-c:a", "aac", "-b:a", a_bitrate, "-ar", sr, "-ac", ch]
         filter_complex = (
             f"[0:v]ass={ass_basename}[v0sub];"
             f"[v0sub]format=yuv420p[v0];"
             f"[{endcard_v}:v]fps={fps},scale={w}:{h}:force_original_aspect_ratio=decrease,"
             f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=yuv420p[v1];"
             f"{audio_norm};"
-            f"[v0][a0][v1][{endcard_a}:a]concat=n=2:v=1:a=1[outv][outa]"
+            f"[v0]{segment_audio}[v1][{endcard_a}:a]concat=n=2:v=1:a=1[outv][outa]"
         )
         mapping = ["-map", "[outv]", "-map", "[outa]"]
     else:
@@ -398,7 +476,7 @@ def build_ffmpeg_command(s: EncodeSettings) -> list[str]:
         if s.audio_path:
             inputs += ["-i", s.audio_path]
         filter_complex = f"[0:v]ass={ass_basename},format=yuv420p[outv]"
-        mapping = ["-map", "[outv]", "-map", audio_src]
+        mapping = ["-map", "[outv]", *(["-map", audio_src] if has_audio else [])]
 
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats",
@@ -447,13 +525,14 @@ def build_marathon_ffmpeg_command(s: MarathonEncodeSettings) -> list[str]:
     sr, layout, ch = audio_params(probe)
 
     v_profile = normalize_profile(probe.video_profile)
-    v_bitrate = s.video_bitrate or probe.video_bitrate or "25400k"
+    v_bitrate = resolve_video_bitrate(s.video_bitrate, probe)
+    v_level = normalize_level(probe.video_level)
     a_bitrate = resolve_audio_bitrate(s.audio_bitrate, probe)
 
     x264 = [
         "-c:v", "libx264",
         "-profile:v", v_profile,
-        "-level", probe.video_level,
+        *(["-level", v_level] if v_level else []),
         "-refs", "3", "-bf", "0",
         "-g", "30", "-keyint_min", "30",
         "-sc_threshold", "0", "-coder", "ac",
